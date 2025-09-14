@@ -4,6 +4,9 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import time
 import json
+import gzip
+import brotli
+import zstandard as zstd
 import cloudscraper
 from bs4 import BeautifulSoup
 import uuid
@@ -30,63 +33,46 @@ class TempMailService:
         try:
             if not content: return None
             encoding = response.headers.get('content-encoding')
-            if encoding == 'gzip':
-                import gzip
-                return gzip.decompress(content).decode('utf-8')
-            if encoding == 'br':
-                import brotli
-                return brotli.decompress(content).decode('utf-8')
-            if encoding == 'zstd':
-                import zstandard as zstd
-                return zstd.decompress(content).decode('utf-8')
+            if encoding == 'gzip': return gzip.decompress(content).decode('utf-8')
+            if encoding == 'br': return brotli.decompress(content).decode('utf-8')
+            if encoding == 'zstd': return zstd.decompress(content).decode('utf-8')
             return content.decode('utf-8')
         except Exception as e:
             print(f"[ERROR] Decompression failed: {e}")
             return None
 
-    async def get_edu_email_with_retries(self, max_retries=3):
-        """Attempt to fetch an email, retrying on failure."""
+    async def get_edu_email(self):
+        """Fetches an EDU email directly without a proxy."""
         scraper = cloudscraper.create_scraper()
-        for attempt in range(max_retries):
-            try:
-                print(f"Attempt {attempt + 1} to get EDU email...")
-                response = scraper.post("https://etempmail.com/getEmailAddress", headers={'origin': 'https://etempmail.com', 'referer': 'https://etempmail.com/'})
-                
-                if response.status_code != 200:
-                    print(f"[WARN] Received status code {response.status_code} on attempt {attempt + 1}")
-                    time.sleep(1)
-                    continue
-
+        try:
+            print("Attempting to get EDU email directly...")
+            response = scraper.post(
+                "https://etempmail.com/getEmailAddress",
+                headers={'origin': 'https://etempmail.com', 'referer': 'https://etempmail.com/'}
+            )
+            
+            if response.status_code == 200:
                 decompressed_data = self.decompress_edu_response(response)
-                if not decompressed_data:
-                    print(f"[WARN] Failed to decompress response on attempt {attempt + 1}")
-                    time.sleep(1)
-                    continue
-
-                data = json.loads(decompressed_data)
-                
-                if 'address' in data and 'recover_key' in data:
-                    print("Successfully fetched EDU email.")
-                    return data['address'], data['recover_key'], response.cookies.get_dict()
-                else:
-                    print(f"[WARN] Response JSON missing required keys on attempt {attempt + 1}")
-                    time.sleep(1)
-
-            except json.JSONDecodeError as e:
-                print(f"[ERROR] JSON Decode Error on attempt {attempt + 1}: {e}")
-                print(f"Raw response: {response.text[:200]}")
-                time.sleep(1)
-            except Exception as e:
-                print(f"[ERROR] An unexpected error occurred on attempt {attempt + 1}: {e}")
-                time.sleep(1)
-        
-        print("All retries to get EDU email failed.")
-        return None, None, None
+                if decompressed_data:
+                    data = json.loads(decompressed_data)
+                    if 'address' in data and 'recover_key' in data:
+                        print("Successfully fetched EDU email.")
+                        return data['address'], data['recover_key'], response.cookies.get_dict()
+            
+            print(f"[WARN] Failed to fetch EDU email. Status code: {response.status_code}")
+            return None, None, None
+        except Exception as e:
+            print(f"[ERROR] An unexpected error occurred while fetching EDU email: {e}")
+            return None, None, None
 
     async def check_edu_inbox(self, cookies):
         scraper = cloudscraper.create_scraper()
         try:
-            response = scraper.post("https://etempmail.com/getInbox", headers={'origin': 'https://etempmail.com', 'referer': 'https://etempmail.com/'}, cookies=cookies)
+            response = scraper.post(
+                "https://etempmail.com/getInbox",
+                headers={'origin': 'https://etempmail.com', 'referer': 'https://etempmail.com/'},
+                cookies=cookies
+            )
             if response.status_code == 200:
                 return json.loads(self.decompress_edu_response(response))
         except Exception as e:
@@ -94,9 +80,9 @@ class TempMailService:
         return []
 
     async def generate_edu_email(self):
-        email, _, cookies = await self.get_edu_email_with_retries()
+        email, _, cookies = await self.get_edu_email()
         if not email:
-            raise HTTPException(status_code=503, detail="The external email provider is currently unavailable. Please try again in a few moments.")
+            raise HTTPException(status_code=503, detail="The email provider is currently unavailable or is blocking requests from this server.")
         
         access_token = str(uuid.uuid4())
         self.email_sessions[access_token] = {"email": email, "cookies": cookies}
