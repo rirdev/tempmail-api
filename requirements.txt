@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+gunicorn
+cloudscraper
+beautifulsoup4
+brotli
+zstandard
+aiohttp
