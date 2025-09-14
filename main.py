@@ -23,14 +23,12 @@ import os
 
 app = FastAPI(title="Smart TempMail API", version="1.0.0")
 
-# Add CORS middleware to allow requests from any origin (like your website)
-# This is essential for a deployed application to work correctly.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all domains
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all HTTP methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 class TempMailService:
@@ -71,19 +69,13 @@ class TempMailService:
                 try:
                     return brotli.decompress(content).decode('utf-8')
                 except brotli.error:
-                    try:
-                        return content.decode('utf-8')
-                    except UnicodeDecodeError:
-                        return None
+                    return content.decode('utf-8', errors='ignore')
             elif response.headers.get('content-encoding') == 'zstd':
                 try:
                     dctx = zstd.ZstdDecompressor()
                     return dctx.decompress(content).decode('utf-8')
                 except zstd.ZstdError:
-                    try:
-                        return content.decode('utf-8')
-                    except UnicodeDecodeError:
-                        return None
+                    return content.decode('utf-8', errors='ignore')
             return content.decode('utf-8')
         except Exception:
             return None
@@ -92,9 +84,7 @@ class TempMailService:
         try:
             jwt_patterns = [
                 r'"jwt"\s*:\s*"(eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.[A-Za-z0-9_-]+)"',
-                r'"token"\s*:\s*"(eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.[A-Za-z0-9_-]+)"',
-                r'window\.token\s*=\s*[\'"]eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.[A-Za-z0-9_-]+[\'"]',
-                r'eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.[A-Za-z0-9_-]+'
+                r'"token"\s*:\s*"(eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.[A-Za-z0-9_-]+)"'
             ]
             for pattern in jwt_patterns:
                 matches = re.findall(pattern, html_content, re.IGNORECASE)
@@ -108,23 +98,12 @@ class TempMailService:
 
     async def extract_email_from_html(self, soup: BeautifulSoup) -> Optional[str]:
         try:
-            email_input = soup.find('input', {'id': 'mail'}) or soup.find('input', {'name': 'mail'})
+            email_input = soup.find('input', {'id': 'mail'})
             if email_input and email_input.get('value'):
                 return email_input.get('value')
             email_span = soup.find('span', {'id': 'mail'})
-            if email_span and email_span.get_text().strip():
-                return email_span.get_text().strip()
-            email_container = soup.find(['div', 'span'], class_=re.compile('email|mailbox|address|temp-mail', re.I))
-            if email_container:
-                email_pattern = r'[\w\.-]+@[\w\.-]+\.\w+'
-                match = re.search(email_pattern, email_container.get_text())
-                if match:
-                    return match.group()
-            email_pattern = r'[\w\.-]+@[\w\.-]+\.\w+'
-            for text in soup.stripped_strings:
-                match = re.search(email_pattern, text)
-                if match and '@' in match.group() and '.' in match.group():
-                    return match.group()
+            if email_span and email_span.get_text(strip=True):
+                return email_span.get_text(strip=True)
             return None
         except Exception as e:
             print(f"[DEBUG] Error extracting email from HTML: {str(e)}")
@@ -133,468 +112,200 @@ class TempMailService:
     async def get_mailbox_and_token(self, api_url: str, cookies: dict, scraper, ten_minute: bool = False) -> tuple:
         try:
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'application/json, text/plain, */*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br, zstd',
                 'Origin': 'https://temp-mail.org',
-                'Referer': 'https://temp-mail.org/en/10minutemail' if ten_minute else 'https://temp-mail.org/en/',
-                'Sec-Ch-Ua': '"Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140"',
-                'Sec-Ch-Ua-Mobile': '?0',
-                'Sec-Ch-Ua-Platform': '"Windows"',
-                'Sec-Fetch-Dest': 'empty',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-site',
-                'Content-Type': 'application/json',
-                'Priority': 'u=1, i'
+                'Referer': 'https://temp-mail.org/',
             }
-            if 'XSRF-TOKEN' in cookies:
-                headers['X-XSRF-TOKEN'] = cookies['XSRF-TOKEN']
             response = scraper.post(f"{api_url}/mailbox", headers=headers, cookies=cookies, json={})
             if response.status_code == 200:
-                try:
-                    data = response.json()
-                    email = data.get('mailbox') or data.get('email') or data.get('address')
-                    jwt_token = data.get('token') or data.get('jwt') or data.get('auth_token')
-                    if jwt_token and jwt_token.startswith('eyJ'):
-                        return email, jwt_token
-                    else:
-                        return email, None
-                except json.JSONDecodeError:
-                    return None, None
-            else:
-                response = scraper.get(f"{api_url}/mailbox", headers=headers, cookies=cookies)
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        email = data.get('mailbox') or data.get('email') or data.get('address')
-                        jwt_token = data.get('token') or data.get('jwt') or data.get('auth_token')
-                        if jwt_token and jwt_token.startswith('eyJ'):
-                            return email, jwt_token
-                        else:
-                            return email, None
-                    except json.JSONDecodeError:
-                        return None, None
-                else:
-                    return None, None
+                data = response.json()
+                email = data.get('mailbox')
+                token = data.get('token')
+                return email, token
+            return None, None
         except Exception as e:
             print(f"[DEBUG] Exception in get_mailbox_and_token: {str(e)}")
             return None, None
 
-    async def check_inbox(self, api_url: str, auth_token: str, cookies: dict, email: str, scraper, ten_minute: bool = False) -> Optional[list]:
+    async def check_inbox(self, api_url: str, auth_token: str, cookies: dict, scraper) -> Optional[list]:
         try:
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br, zstd',
-                'Origin': 'https://temp-mail.org',
-                'Referer': 'https://temp-mail.org/en/10minutemail' if ten_minute else 'https://temp-mail.org/en/',
-                'Sec-Ch-Ua': '"Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140"',
-                'Sec-Ch-Ua-Mobile': '?0',
-                'Sec-Ch-Ua-Platform': '"Windows"',
-                'Sec-Fetch-Dest': 'empty',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-site',
-                'Priority': 'u=1, i'
+                'Authorization': f'Bearer {auth_token}',
+                'Referer': 'https://temp-mail.org/',
             }
-            if auth_token:
-                headers['Authorization'] = f'Bearer {auth_token}'
-            if 'XSRF-TOKEN' in cookies:
-                headers['X-XSRF-TOKEN'] = cookies['XSRF-TOKEN']
             response = scraper.get(f"{api_url}/messages", headers=headers, cookies=cookies)
             if response.status_code == 200:
-                try:
-                    inbox_data = response.json()
-                    if 'messages' in inbox_data:
-                        return inbox_data['messages']
-                    elif isinstance(inbox_data, list):
-                        return inbox_data
-                    else:
-                        return []
-                except json.JSONDecodeError:
-                    return None
-            else:
-                return None
+                return response.json()
+            return None
         except Exception as e:
             print(f"[DEBUG] Exception in check_inbox: {str(e)}")
             return None
 
     async def generate_temp_mail(self, ten_minute: bool = False) -> Dict[str, Any]:
-        start_time = time.time()
         scraper = cloudscraper.create_scraper()
         try:
             url = 'https://temp-mail.org/en/10minutemail' if ten_minute else 'https://temp-mail.org/en/'
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br, zstd',
-                'Sec-Ch-Ua': '"Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140"',
-                'Sec-Ch-Ua-Mobile': '?0',
-                'Sec-Ch-Ua-Platform': '"Windows"',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1',
-                'Priority': 'u=0, i'
-            }
-            response = scraper.get(url, headers=headers, allow_redirects=True)
+            response = scraper.get(url)
             if response.status_code != 200:
-                raise HTTPException(status_code=500, detail=f"Failed to connect to {url}")
-            html_content = await self.decompress_response(response.text, response.headers)
+                raise HTTPException(status_code=503, detail="Could not connect to the email provider.")
+            
+            html_content = response.text
             cookies = dict(response.cookies)
             soup = BeautifulSoup(html_content, 'html.parser')
-            api_url = None
-            scripts = soup.find_all('script')
-            for script in scripts:
-                if script.string:
-                    script_content = script.string
-                    api_patterns = [
-                        r"var api_url\s*=\s*'([^']+)'",
-                        r'"api_url"\s*:\s*"([^"]+)"',
-                        r'apiUrl\s*:\s*[\'"]([^\'"]+)[\'"]',
-                        r'API_URL\s*=\s*[\'"]([^\'"]+)[\'"]'
-                    ]
-                    for pattern in api_patterns:
-                        match = re.search(pattern, script_content)
-                        if match:
-                            encoded_api_url = match.group(1)
-                            api_url = await self.decode_api_url(encoded_api_url)
-                            if api_url:
-                                break
-                    if api_url:
-                        break
-            if not api_url:
-                api_url = "https://web2.temp-mail.org"
+            
+            api_url = "https://web2.temp-mail.org" # Hardcode for reliability
+            
             email, auth_token = await self.get_mailbox_and_token(api_url, cookies, scraper, ten_minute)
-            if not email or not auth_token:
+
+            if not email:
                 email = await self.extract_email_from_html(soup)
-                if not auth_token:
-                    auth_token = await self.extract_auth_token(html_content, cookies)
+            if not auth_token:
+                auth_token = await self.extract_auth_token(html_content, cookies)
+
             if not email or not auth_token:
-                raise HTTPException(status_code=500, detail="Failed to generate temporary email")
-            session_data = {
-                'api_url': api_url,
-                'email': email,
-                'cookies': cookies,
-                'scraper': scraper,
-                'created_at': time.time(),
-                'ten_minute': ten_minute
-            }
+                raise HTTPException(status_code=503, detail="The email provider is currently unavailable or blocking requests. Please try the EDU option.")
+
+            session_data = {'api_url': api_url, 'email': email, 'cookies': cookies, 'scraper': scraper, 'created_at': time.time(), 'ten_minute': ten_minute}
             self.sessions[auth_token] = session_data
-            time_taken = f"{time.time() - start_time:.2f}s"
+            
             return {
                 "temp_mail": email,
                 "access_token": auth_token,
-                "time_taken": time_taken,
                 "expires_at": (datetime.now() + timedelta(minutes=10)).strftime('%Y-%m-%d %H:%M:%S') if ten_minute else "N/A"
             }
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error generating temp mail: {str(e)}")
-        finally:
-            pass
+            print(f"[ERROR] generate_temp_mail: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     async def check_messages(self, token: str) -> Dict[str, Any]:
         if token not in self.sessions:
             raise HTTPException(status_code=404, detail="Invalid or expired token")
+        
         session = self.sessions[token]
         if session['ten_minute'] and (time.time() - session['created_at']) > 600:
             del self.sessions[token]
             raise HTTPException(status_code=410, detail="10-minute email has expired")
+
         try:
-            messages = await self.check_inbox(
-                session['api_url'],
-                token,
-                session['cookies'],
-                session['email'],
-                session['scraper'],
-                session['ten_minute']
-            )
-            if messages is None:
+            messages_raw = await self.check_inbox(session['api_url'], token, session['cookies'], session['scraper'])
+            if messages_raw is None:
                 raise HTTPException(status_code=500, detail="Failed to check inbox")
-            enhanced_messages = []
-            for message in messages:
-                enhanced_message = message.copy()
-                if 'receivedAt' in enhanced_message:
-                    try:
-                        enhanced_message['receivedAt'] = datetime.fromtimestamp(
-                            enhanced_message['receivedAt']
-                        ).strftime('%Y-%m-%d %H:%M:%S')
-                    except:
-                        pass
-                enhanced_messages.append(enhanced_message)
-            return {
-                "mailbox": session['email'],
-                "messages": enhanced_messages,
-            }
+
+            # **FIX**: Standardize the message format
+            standardized_messages = []
+            for msg in messages_raw:
+                sender = (msg.get('fromAddress', {}).get('address')) or 'Unknown Sender'
+                received_at = msg.get('receivedAt')
+                date_str = datetime.fromtimestamp(received_at).strftime('%Y-%m-%d %H:%M:%S') if received_at else 'N/A'
+                
+                standardized_messages.append({
+                    "from": sender,
+                    "subject": msg.get('subject', 'No Subject'),
+                    "date": date_str,
+                    "body": msg.get('text', 'No content available.')
+                })
+
+            return {"mailbox": session['email'], "messages": standardized_messages}
         except Exception as e:
+            print(f"[ERROR] check_messages: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error checking messages: {str(e)}")
 
     async def get_edu_email(self):
         url = "https://etempmail.com/getEmailAddress"
-        headers = {
-            'accept': '*/*',
-            'accept-encoding': 'gzip, deflate, br',
-            'accept-language': 'en-US,en;q=0.6',
-            'origin': 'https://etempmail.com',
-            'referer': 'https://etempmail.com/',
-            'sec-ch-ua': '"Chromium";v="140", "Not=A?Brand";v="24", "Brave";v="140"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-origin',
-            'sec-gpc': '1',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
-            'x-requested-with': 'XMLHttpRequest'
-        }
+        headers = {'origin': 'https://etempmail.com', 'referer': 'https://etempmail.com/'}
         scraper = cloudscraper.create_scraper()
-        for attempt in range(3):
-            try:
-                response = scraper.post(url, headers=headers)
-                if response.status_code == 200:
-                    decompressed = self.decompress_edu_response(response)
-                    if not decompressed:
-                        if attempt < 2:
-                            time.sleep(2)
-                            continue
-                        return None, None, None
-                    try:
-                        data = json.loads(decompressed)
-                        return data['address'], data['recover_key'], response.cookies.get_dict()
-                    except json.JSONDecodeError:
-                        if attempt < 2:
-                            time.sleep(2)
-                            continue
-                        return None, None, None
-                else:
-                    if attempt < 2:
-                        time.sleep(2)
-                        continue
-                    return None, None, None
-            except Exception:
-                if attempt < 2:
-                    time.sleep(2)
-                    continue
-                return None, None, None
+        try:
+            response = scraper.post(url, headers=headers)
+            if response.status_code == 200:
+                data = json.loads(self.decompress_edu_response(response))
+                return data['address'], data['recover_key'], response.cookies.get_dict()
+        except Exception:
+            return None, None, None
         return None, None, None
 
-    async def check_edu_inbox(self, email, cookies):
+    async def check_edu_inbox(self, cookies):
         url = "https://etempmail.com/getInbox"
-        headers = {
-            'accept': '*/*',
-            'accept-encoding': 'gzip, deflate, br',
-            'accept-language': 'en-US,en;q=0.6',
-            'origin': 'https://etempmail.com',
-            'referer': 'https://etempmail.com/',
-            'sec-ch-ua': '"Chromium";v="140", "Not=A?Brand";v="24", "Brave";v="140"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-origin',
-            'sec-gpc': '1',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
-            'x-requested-with': 'XMLHttpRequest'
-        }
+        headers = {'origin': 'https://etempmail.com', 'referer': 'https://etempmail.com/'}
         scraper = cloudscraper.create_scraper()
         try:
             response = scraper.post(url, headers=headers, cookies=cookies)
             if response.status_code == 200:
-                decompressed = self.decompress_edu_response(response)
-                if decompressed is None:
-                    return []
-                try:
-                    data = json.loads(decompressed)
-                    return data
-                except json.JSONDecodeError:
-                    return []
-            else:
-                return []
+                return json.loads(self.decompress_edu_response(response))
         except Exception:
             return []
+        return []
 
     async def generate_edu_email(self):
         try:
             email, recover_key, cookies = await self.get_edu_email()
             if not email:
-                raise HTTPException(status_code=500, detail="Failed to generate email")
+                raise HTTPException(status_code=500, detail="Failed to generate EDU email")
             access_token = str(uuid.uuid4())
-            self.email_sessions[access_token] = {
-                "email": email,
-                "recover_key": recover_key,
-                "cookies": cookies,
-                "created_at": time.time()
-            }
-            return {
-                "edu_mail": email,
-                "access_token": access_token
-            }
+            self.email_sessions[access_token] = {"email": email, "cookies": cookies, "created_at": time.time()}
+            return {"edu_mail": email, "access_token": access_token}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
     async def check_edu_messages(self, token: str):
+        if token not in self.email_sessions:
+            raise HTTPException(status_code=404, detail="Invalid or expired EDU token")
+        session = self.email_sessions[token]
         try:
-            if token not in self.email_sessions:
-                raise HTTPException(status_code=404, detail="Invalid or expired token")
-            session = self.email_sessions[token]
-            email = session["email"]
-            cookies = session["cookies"]
-            inbox = await self.check_edu_inbox(email, cookies)
-            messages = []
-            for mail in inbox:
-                soup = BeautifulSoup(mail['body'], 'html.parser')
-                body_text = soup.get_text().strip()
-                messages.append({
-                    "From": mail['from'],
-                    "Subject": mail['subject'],
-                    "Date": mail['date'],
-                    "body": body_text,
-                    "Message": body_text
+            inbox_raw = await self.check_edu_inbox(session["cookies"])
+            
+            # **FIX**: Standardize the message format with lowercase keys
+            standardized_messages = []
+            for mail in inbox_raw:
+                soup = BeautifulSoup(mail.get('body', ''), 'html.parser')
+                body_text = soup.get_text(strip=True)
+                standardized_messages.append({
+                    "from": mail.get('from', 'Unknown Sender'),
+                    "subject": mail.get('subject', 'No Subject'),
+                    "date": mail.get('date', 'N/A'),
+                    "body": body_text or 'No content available.'
                 })
-            response_data = {
-                "edu_mail": email,
-                "access_token": token,
-                "messages": messages
-            }
-            if messages:
-                latest_message = messages[0]
-                response_data.update({
-                    "Message": latest_message["Message"],
-                    "From": latest_message["From"],
-                    "body": latest_message["body"],
-                    "Date": latest_message["Date"],
-                    "Subject": latest_message["Subject"]
-                })
-            else:
-                response_data.update({
-                    "Message": "",
-                    "From": "",
-                    "body": "",
-                    "Date": "",
-                    "Subject": ""
-                })
-            return response_data
+            
+            return {"edu_mail": session["email"], "messages": standardized_messages}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
 temp_mail_service = TempMailService()
 
+# --- API Endpoints ---
 @app.get("/")
 async def root():
-    index_path = os.path.join(os.path.dirname(__file__), "index.html")
-    if not os.path.exists(index_path):
-        raise HTTPException(status_code=404, detail="index.html not found")
-    return FileResponse(index_path)
+    return JSONResponse(content={"message": "TempMail API is running."})
 
 @app.get("/api/gen")
 async def generate_mail():
-    try:
-        result = await temp_mail_service.generate_temp_mail(ten_minute=False)
-        return JSONResponse(content=result)
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        print(f"[DEBUG] Error in /api/gen: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await temp_mail_service.generate_temp_mail(ten_minute=False)
 
 @app.get("/api/chk")
 async def check_mail(token: str):
-    try:
-        result = await temp_mail_service.check_messages(token)
-        return JSONResponse(content=result)
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        print(f"[DEBUG] Error in /api/chk: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await temp_mail_service.check_messages(token)
 
 @app.get("/api/10min/gen")
 async def generate_10min_mail():
-    try:
-        result = await temp_mail_service.generate_temp_mail(ten_minute=True)
-        return JSONResponse(content=result)
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        print(f"[DEBUG] Error in /api/10min/gen: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await temp_mail_service.generate_temp_mail(ten_minute=True)
 
 @app.get("/api/10min/chk")
 async def check_10min_mail(token: str):
-    try:
-        result = await temp_mail_service.check_messages(token)
-        return JSONResponse(content=result)
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        print(f"[DEBUG] Error in /api/10min/chk: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await temp_mail_service.check_messages(token)
 
 @app.get("/api/edu/gen")
-async def generate_edu_email():
-    try:
-        result = await temp_mail_service.generate_edu_email()
-        return JSONResponse(content=result)
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        print(f"[DEBUG] Error in /api/edu/gen: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+async def generate_edu_email_endpoint():
+    return await temp_mail_service.generate_edu_email()
 
 @app.get("/api/edu/chk")
-async def check_edu_messages(token: str):
-    try:
-        result = await temp_mail_service.check_edu_messages(token)
-        return JSONResponse(content=result)
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        print(f"[DEBUG] Error in /api/edu/chk: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+async def check_edu_messages_endpoint(token: str):
+    return await temp_mail_service.check_edu_messages(token)
 
-def cleanup_expired_sessions():
-    while True:
-        current_time = time.time()
-        expired_tokens = []
-        for token, session in temp_mail_service.email_sessions.items():
-            if current_time - session["created_at"] > 7200:
-                expired_tokens.append(token)
-        for token in expired_tokens:
-            del temp_mail_service.email_sessions[token]
-        time.sleep(300)
-
-def get_local_ip():
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
-    except Exception:
-        return "127.0.0.1"
-
+# --- Server Startup ---
 if __name__ == "__main__":
     import uvicorn
-    local_ip = get_local_ip()
     port = int(os.getenv("PORT", 8000))
-    print(f"TempMail API Server Starting...")
-    print(f"Local IP: {local_ip}")
-    print(f"Server running on: http://{local_ip}:{port}")
-    print(f"API Documentation: http://{local_ip}:{port}/docs")
-    print(f"Generate Regular Mail: http://{local_ip}:{port}/api/gen")
-    print(f"Check Regular Messages: http://{local_ip}:{port}/api/chk?token=YOUR_TOKEN")
-    print(f"Generate 10-Minute Mail: http://{local_ip}:{port}/api/10min/gen")
-    print(f"Check 10-Minute Messages: http://{local_ip}:{port}/api/10min/chk?token=YOUR_TOKEN")
-    print(f"Generate Edu Mail: http://{local_ip}:{port}/api/edu/gen")
-    print(f"Check Edu Messages: http://{local_ip}:{port}/api/edu/chk?token=YOUR_TOKEN")
-    cleanup_thread = threading.Thread(target=cleanup_expired_sessions, daemon=True)
-    cleanup_thread.start()
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=port,
-        reload=False,
-        access_log=True
-    )
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
