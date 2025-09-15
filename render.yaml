@@ -1,8 +1,13 @@
 services:
   - type: web
-    name: temp-mail-backend
+    name: edu-tempmail-api
     env: python
-    plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app"
-
+    region: frankfurt           # pick the closest region
+    plan: free                  # or 'starter' / 'standard'
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11
